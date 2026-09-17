@@ -1,0 +1,51 @@
+[package]
+name        = "ical-nv"
+version     = "0.0.1"
+description = "The iCalendar object model of RFC 5545 in both directions: content lines folded at 75 octets on character boundaries, TEXT escaping, parameters, the fourteen value types with the VALUE parameter honoured, and VCALENDAR, VEVENT, VTODO, VJOURNAL, VALARM, VTIMEZONE and VFREEBUSY over calendar-nv's civil dates and rrule-nv's recurrence rules."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  Every row is `[]`.  A `.ics` file arrives as a `Str` the
+# caller read and leaves as a `Str` the caller writes: nothing here
+# opens a file, fetches a URL or reads a clock.  A `DTSTAMP` is a
+# value the caller supplies, which is what keeps a generated calendar
+# byte-identical between two runs of a test.
+layer       = "core"
+
+category    = "time"
+
+tags        = ["icalendar", "ics", "rfc-5545", "calendar", "vevent", "vtimezone", "time"]
+repository  = "https://github.com/novolang/ical-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+[docs.pages]
+"README.md" = "The RFC 5545 iCalendar object model, both ways"
+
+[dependencies]
+# calendar-nv supplies `CivilDate`, `CivilDateTime`, `CivilTime` and
+# `TimeDelta` — the four things RFC 5545's DATE, DATE-TIME, TIME and
+# DURATION value types decode to.  Declaring its own would make an
+# occurrence read out of a calendar incomparable with one generated
+# from a rule, which is the whole reason both packages take the same
+# types.
+calendar-nv = "^0.0.2"
+
+# rrule-nv supplies `Rrule` and `RruleSet`: the RECUR value type IS a
+# recurrence rule, and `icalevent.recurrence_of` hands back a set with
+# the event's DTSTART, RRULE, RDATE and EXDATE already assembled, so a
+# caller never re-implements RFC 5545 § 3.8.5's order of operations.
+#
+# A PATH DEPENDENCY WHILE BOTH ARE STAGED IN ONE CHECKOUT.  `novo pkg
+# publish` refuses a path — a tarball carrying one sends every
+# consumer to a directory that is not on their machine — so this line
+# becomes `rrule-nv = "^0.0.1"` before the publish, and rrule-nv is
+# published first.  Under the caret rule `^0.0.1` pins exactly 0.0.1,
+# because a `0.0.x` version has no compatible neighbours.
+rrule-nv = { path = "../rrule-nv" }

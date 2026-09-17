@@ -1,0 +1,159 @@
+// icalvalue_tests.nv — the fourteen value types, the VALUE parameter,
+// and the three forms a DATE-TIME comes in.
+//
+// RED ON PURPOSE.  The vectors are RFC 5545 § 3.3's own examples.
+
+use std.test
+use civil
+use icalerror
+use icalvalue
+use span
+
+@test
+fn test_a_date_and_a_date_time_are_different_values() [io]
+    // `DTSTART;VALUE=DATE:20260105` is an all-day event on the 5th.
+    // `DTSTART:20260105T090000` is an event at nine in the morning.
+    // A library that kept both as text, or widened both to a
+    // date-time at midnight, cannot tell them apart — and the two are
+    // rendered differently, sorted differently, and have different
+    // end dates.
+    test.case("a DATE parses to a day with no time at all")
+    match icalvalue.parse_value(IcalKindDate, "20260105", IcalFloatingTime)
+        Err(_) => test.fail("that is RFC 5545 § 3.3.4's own form")
+        Ok(v)  =>
+            test.assert(icalvalue.kind_name(icalvalue.kind_of(v)) == "DATE")
+            match icalvalue.date_of(v)
+                Some(d) => test.assert(d.day == 5)
+                None    => test.fail("a DATE value has a day")
+            test.assert_none(icalvalue.datetime_of(v))
+
+    test.case("a DATE-TIME parses to a wall time, and is not a DATE")
+    match icalvalue.parse_value(IcalKindDateTime, "20260105T090000", IcalFloatingTime)
+        Err(_) => test.fail("that is RFC 5545 § 3.3.5's own form")
+        Ok(v)  =>
+            test.assert_none(icalvalue.date_of(v))
+            match icalvalue.datetime_of(v)
+                Some(dt) => test.assert(dt.time.hour == 9)
+                None     => test.fail("a DATE-TIME value has an instant")
+
+@test
+fn test_a_date_time_carries_which_of_the_three_forms_it_is_in() [io]
+    // Floating, UTC and zoned are three different meanings
+    // distinguished in the text by one letter and a parameter, which
+    // is why every calendar implementation has read one as another.
+    test.case("a trailing Z is the UTC form")
+    match icalvalue.parse_value(IcalKindDateTime, "20260105T090000Z", IcalFloatingTime)
+        Err(_) => test.fail("that is the UTC form")
+        Ok(v)  =>
+            match icalvalue.form_of(v)
+                None    => test.fail("a DATE-TIME has a form")
+                Some(f) => test.assert(icalvalue.form_tzid(f) == "")
+
+    test.case("a TZID parameter makes it zoned, and the identifier survives")
+    let zoned = IcalZonedTime("Europe/Copenhagen")
+    match icalvalue.parse_value(IcalKindDateTime, "20260105T090000", zoned)
+        Err(_) => test.fail("that is the zoned form")
+        Ok(v)  =>
+            match icalvalue.form_of(v)
+                None    => test.fail("a DATE-TIME has a form")
+                Some(f) => test.assert(icalvalue.form_tzid(f) == "Europe/Copenhagen")
+
+    test.case("floating and UTC name no zone")
+    test.assert(icalvalue.form_tzid(IcalFloatingTime) == "")
+    test.assert(icalvalue.form_tzid(IcalUtcTime) == "")
+
+    test.case("a value with no time of day has no form")
+    test.assert_none(icalvalue.form_of(IcalIntegerVal(1)))
+
+@test
+fn test_the_value_parameter_is_honoured_and_is_checked() [io]
+    test.case("DTSTART's default is DATE-TIME")
+    match icalvalue.default_kind("DTSTART")
+        None    => test.fail("DTSTART is a property this package knows")
+        Some(k) => test.assert(icalvalue.kind_name(k) == "DATE-TIME")
+
+    test.case("and it allows DATE as the alternative")
+    test.assert(list.len(icalvalue.allowed_kinds("DTSTART")) == 2)
+
+    test.case("SUMMARY allows no alternative at all")
+    match icalvalue.default_kind("SUMMARY")
+        None    => test.fail("SUMMARY is a property this package knows")
+        Some(k) => test.assert(icalvalue.kind_name(k) == "TEXT")
+    test.assert(list.len(icalvalue.allowed_kinds("SUMMARY")) == 0)
+
+    test.case("an X- property has no default, and is kept rather than refused")
+    test.assert_none(icalvalue.default_kind("X-WR-CALNAME"))
+
+    test.case("the type names go both ways, case-insensitively")
+    test.assert(icalvalue.kind_name(IcalKindUtcOffset) == "UTC-OFFSET")
+    match icalvalue.kind_named("date-time")
+        None    => test.fail("the grammar is case-insensitive over ASCII")
+        Some(k) => test.assert(icalvalue.kind_name(k) == "DATE-TIME")
+    test.assert_none(icalvalue.kind_named("TIMESTAMP"))
+
+@test
+fn test_the_remaining_types_parse_and_print_back() [io]
+    test.case("BOOLEAN is upper case")
+    match icalvalue.parse_value(IcalKindBoolean, "TRUE", IcalFloatingTime)
+        Err(_) => test.fail("TRUE is RFC 5545 § 3.3.2's own form")
+        Ok(v)  => test.assert(icalvalue.print_value(v) == "TRUE")
+
+    test.case("INTEGER and FLOAT")
+    match icalvalue.parse_value(IcalKindInteger, "5", IcalFloatingTime)
+        Err(_) => test.fail("5 is an integer")
+        Ok(v)  => test.assert(icalvalue.print_value(v) == "5")
+
+    test.case("DURATION is ISO 8601 and never carries months")
+    match icalvalue.parse_value(IcalKindDuration, "PT1H", IcalFloatingTime)
+        Err(_) => test.fail("PT1H is RFC 5545 § 3.3.6's own form")
+        Ok(v)  => test.assert(icalvalue.print_value(v) == "PT1H")
+
+    test.case("UTC-OFFSET is minutes east, and the sign survives")
+    match icalvalue.parse_value(IcalKindUtcOffset, "-0500", IcalFloatingTime)
+        Err(_) => test.fail("-0500 is RFC 5545 § 3.3.14's own form")
+        Ok(v)  => test.assert(icalvalue.print_value(v) == "-0500")
+
+    test.case("RECUR is a rule, not a string")
+    match icalvalue.parse_value(IcalKindRecur, "FREQ=DAILY;COUNT=10", IcalFloatingTime)
+        Err(_) => test.fail("that is a recurrence rule")
+        Ok(v)  => test.assert(icalvalue.kind_name(icalvalue.kind_of(v)) == "RECUR")
+
+    test.case("TEXT arrives unescaped")
+    match icalvalue.parse_value(IcalKindText, "Tea\\, then cake", IcalFloatingTime)
+        Err(_) => test.fail("that is a TEXT value")
+        Ok(v)  =>
+            match icalvalue.text_of(v)
+                Some(t) => test.assert(t == "Tea, then cake")
+                None    => test.fail("a TEXT value has text")
+
+    test.case("and asking a non-TEXT value for its text is None, not a rendering")
+    test.assert_none(icalvalue.text_of(IcalIntegerVal(5)))
+
+    test.case("a value that does not parse is refused, naming the type")
+    match icalvalue.parse_value(IcalKindDate, "the fifth", IcalFloatingTime)
+        Ok(_)  => test.fail("that is not a date")
+        Err(e) =>
+            test.assert(icalerror.code(e) == "bad-value")
+            test.assert(icalerror.is_fatal(e) == false)
+
+@test
+fn test_a_period_keeps_the_form_it_was_written_in() [io]
+    // A FREEBUSY sent as start/duration and read back as start/end is
+    // a different document for a signature to check.
+    test.case("start and end")
+    match civil.date(2026, 1, 5)
+        Err(_) => test.fail("that is a date")
+        Ok(d)  =>
+            let at = civil.datetime(d, civil.midnight())
+            let p = icalvalue.period_to(at, at)
+            test.assert(p.written_as_duration == false)
+            test.assert(p.start.date.day == 5)
+
+    test.case("start and duration")
+    match civil.date(2026, 1, 5)
+        Err(_) => test.fail("that is a date")
+        Ok(d)  =>
+            let at = civil.datetime(d, civil.midnight())
+            let p = icalvalue.period_for(at, span.hours(1))
+            test.assert(p.written_as_duration)
+            test.assert(span.as_seconds(p.length) == 3600)

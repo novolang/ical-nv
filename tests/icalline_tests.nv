@@ -1,0 +1,140 @@
+// icalline_tests.nv — folding, unfolding, escaping, and splitting a
+// content line into its three parts.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// ical-nv.<module>.<fn>`.
+//
+// The vectors are RFC 5545 § 3.1's own folding example and § 3.3.11's
+// escaping rules.
+
+use std.test
+use icalerror
+use icalline
+
+@test
+fn test_the_rfcs_own_folding_example() [io]
+    // RFC 5545 § 3.1 prints this line folded after `This is a lo`,
+    // with one space beginning the continuation.
+    test.case("unfolding removes the CRLF and exactly one space")
+    let folded = "DESCRIPTION:This is a lo\r\n ng description that exists on a long line."
+    let lines = icalline.unfold(folded)
+    test.assert(list.len(lines) == 1)
+    test.assert(lines[0] == "DESCRIPTION:This is a long description that exists on a long line.")
+
+    test.case("a bare LF is accepted as a line break too")
+    test.assert(list.len(icalline.unfold("BEGIN:VCALENDAR\nEND:VCALENDAR\n")) == 2)
+
+    test.case("the width RFC 5545 § 3.1 gives is 75 octets")
+    test.assert(icalline.fold_width() == 75)
+
+    test.case("a short line is not folded")
+    test.assert(icalline.fold("UID:a@b", 75) == "UID:a@b")
+
+@test
+fn test_folding_counts_octets_and_cuts_on_a_character_boundary() [io]
+    // A character count produces lines of up to 300 octets, which a
+    // strict reader refuses.  An octet count that cuts anywhere
+    // splits a UTF-8 character in half, and the two pieces are not
+    // text in any encoding.
+    test.case("every physical line of a fold is within the width")
+    let long = "SUMMARY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    let folded = icalline.fold(long, 75)
+    for line in str.split(folded, "\r\n")
+        test.assert(str.len(line) <= 75)
+
+    test.case("and folding then unfolding gives the value back")
+    let back = icalline.unfold(folded)
+    test.assert(list.len(back) == 1)
+    test.assert(back[0] == long)
+
+    test.case("a value of multi-byte characters survives the round trip")
+    let danish = "SUMMARY:kaffe på Nørrebro med Åse og Øystein, hver eneste onsdag morgen"
+    let round = icalline.unfold(icalline.fold(danish, 75))
+    test.assert(round[0] == danish)
+
+@test
+fn test_a_content_line_splits_into_name_parameters_and_value() [io]
+    test.case("a plain property")
+    match icalline.parse_line("SUMMARY:Team meeting")
+        Err(_) => test.fail("that is a content line")
+        Ok(l)  =>
+            test.assert(l.name == "SUMMARY")
+            test.assert(l.value == "Team meeting")
+            test.assert(list.len(l.params) == 0)
+
+    test.case("a property with a parameter")
+    match icalline.parse_line("DTSTART;VALUE=DATE:20260105")
+        Err(_) => test.fail("that is a content line")
+        Ok(l)  =>
+            test.assert(l.name == "DTSTART")
+            test.assert(l.value == "20260105")
+            match icalline.param_value(l, "VALUE")
+                Some(v) => test.assert(v == "DATE")
+                None    => test.fail("the VALUE parameter is there")
+
+    test.case("a quoted parameter value may hold a colon")
+    match icalline.parse_line("ATTACH;FMTTYPE=text/plain;ALTREP=\"https://x.example/a:b\":x")
+        Err(_) => test.fail("that is a content line")
+        Ok(l)  =>
+            match icalline.param_value(l, "ALTREP")
+                Some(v) => test.assert(v == "https://x.example/a:b")
+                None    => test.fail("the ALTREP parameter is there")
+
+    test.case("a line with no colon is refused, and it is fatal")
+    match icalline.parse_line("SUMMARY Team meeting")
+        Ok(_)  => test.fail("the parser cannot tell where the name ends")
+        Err(e) =>
+            test.assert(icalerror.code(e) == "malformed-line")
+            test.assert(icalerror.is_fatal(e))
+
+    test.case("an unterminated quoted parameter is refused")
+    match icalline.parse_line("ATTACH;ALTREP=\"https://x.example:x")
+        Ok(_)  => test.fail("the value would swallow the rest of the file")
+        Err(e) => test.assert(icalerror.is_fatal(e))
+
+@test
+fn test_escaping_is_the_other_lossy_half() [io]
+    // An unescaped comma does not corrupt the file.  It turns ONE
+    // value into a LIST of two, and the reader at the other end gets
+    // two descriptions where there was one, with nothing raised.
+    test.case("a comma is escaped")
+    test.assert(icalline.escape_text("Tea, then cake") == "Tea\\, then cake")
+
+    test.case("and a backslash, a semicolon and a newline")
+    test.assert(icalline.escape_text("a;b") == "a\\;b")
+    test.assert(icalline.escape_text("a\\b") == "a\\\\b")
+    test.assert(icalline.escape_text("a\nb") == "a\\nb")
+
+    test.case("unescaping is the inverse, and accepts the upper-case form")
+    test.assert(icalline.unescape_text("Tea\\, then cake") == "Tea, then cake")
+    test.assert(icalline.unescape_text("a\\Nb") == "a\nb")
+
+    test.case("a backslash before anything else is kept, not dropped")
+    // Dropping it silently loses a character from a Windows path
+    // somebody pasted into a description.
+    test.assert(icalline.unescape_text("C:\\Users") == "C:\\Users")
+
+    test.case("splitting comes before unescaping, and only on unescaped commas")
+    test.assert(list.len(icalline.split_values("one,two,three")) == 3)
+    test.assert(list.len(icalline.split_values("Tea\\, then cake")) == 1)
+
+@test
+fn test_printing_quotes_a_parameter_that_needs_it() [io]
+    test.case("a plain line prints back")
+    let plain = icalline.line("SUMMARY", [], "Team meeting")
+    test.assert(icalline.print_line(plain) == "SUMMARY:Team meeting")
+
+    test.case("a TZID needs no quotes")
+    let tz = icalline.line("DTSTART", [icalline.param("TZID", ["Europe/Copenhagen"])], "20260105T090000")
+    test.assert(icalline.print_line(tz)
+                == "DTSTART;TZID=Europe/Copenhagen:20260105T090000")
+
+    test.case("a parameter value holding a colon is quoted")
+    let alt = icalline.line("ATTACH", [icalline.param("ALTREP", ["https://x.example/a"])], "x")
+    test.assert(icalline.print_line(alt) == "ATTACH;ALTREP=\"https://x.example/a\":x")
+
+    test.case("a parameter carries its values")
+    test.assert(list.len(icalline.param("MEMBER", ["a", "b"]).values) == 2)
+
+    test.case("a parameter that is not there is None")
+    test.assert_none(icalline.param_value(plain, "TZID"))

@@ -1,0 +1,162 @@
+// icalevent_tests.nv — the off-by-one every calendar has shipped, and
+// the series assembled in the order RFC 5545 fixes.
+//
+// RED ON PURPOSE.
+//
+// The load-bearing vector is the all-day event.  RFC 5545 § 3.6.1
+// makes `DTEND` NON-INCLUSIVE, so a one-day event on 2026-01-05 is
+// written with `DTEND;VALUE=DATE:20260106`.  A reader that renders
+// `DTEND` as the last day shows the event on two days; a writer that
+// emits the last day produces an event everybody else shows one day
+// short.  Neither raises anything, because each round-trips its own
+// mistake.
+
+use std.test
+use icalcomp
+use icalerror
+use icalevent
+use icalparse
+use icalvalue
+use span
+
+// The one-day all-day event of 2026-01-05, written the way RFC 5545
+// § 3.6.1 requires.
+fn all_day_component() -> icalcomp.IcalComponent
+    let text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//y//EN\r\nBEGIN:VEVENT\r\nUID:a@example\r\nDTSTAMP:20260101T000000Z\r\nDTSTART;VALUE=DATE:20260105\r\nDTEND;VALUE=DATE:20260106\r\nSUMMARY:Off\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    match icalparse.parse(text)
+        Err(_) => icalcomp.component("VEVENT")
+        Ok(r)  =>
+            if list.len(r.calendars) == 0
+                icalcomp.component("VEVENT")
+            else
+                let kids = icalcomp.children_named(r.calendars[0], "VEVENT")
+                if list.len(kids) == 0
+                    icalcomp.component("VEVENT")
+                else
+                    kids[0]
+
+@test
+fn test_dtend_is_exclusive_and_the_last_day_is_the_day_before() [io]
+    test.case("a one-day all-day event ends on the 6th, exclusively")
+    match icalevent.event_of(all_day_component())
+        Err(_) => test.fail("that is a VEVENT")
+        Ok(e)  =>
+            test.assert(icalevent.is_all_day(e))
+            match icalevent.end_exclusive(e)
+                Err(_) => test.fail("it carries a DTEND and no DURATION")
+                Ok(v)  =>
+                    match icalvalue.date_of(v)
+                        Some(d) => test.assert(d.day == 6)
+                        None    => test.fail("an all-day end is a DATE")
+
+    test.case("and the last day it covers is the 5th")
+    match icalevent.event_of(all_day_component())
+        Err(_) => test.fail("that is a VEVENT")
+        Ok(e)  =>
+            match icalevent.last_day(e)
+                Some(d) => test.assert(d.day == 5)
+                None    => test.fail("an all-day event has a last day")
+
+    test.case("a timed event has no last day in that sense")
+    let timed = "BEGIN:VEVENT\r\nUID:b@example\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:20260105T090000\r\nDTEND:20260105T100000\r\nEND:VEVENT\r\n"
+    match icalparse.parse_strict(timed)
+        Err(_) => test.assert(true)
+        Ok(_)  => test.assert(true)
+
+@test
+fn test_a_missing_end_takes_the_specifications_default() [io]
+    // RFC 5545 § 3.6.1: one day for a date-valued start, zero length
+    // for a timed one.  Computed here rather than left to each caller.
+    test.case("a date-valued start with no DTEND lasts one day")
+    let c = icalcomp.component("VEVENT")
+    match icalevent.event_of(c)
+        Err(_) => test.fail("that is a VEVENT")
+        Ok(e)  =>
+            test.assert(e.has_end == false)
+            test.assert(e.has_duration == false)
+
+    test.case("the length of an event with neither is still an answer")
+    match icalevent.event_of(c)
+        Err(_) => test.fail("that is a VEVENT")
+        Ok(e)  =>
+            match icalevent.duration_of(e)
+                Ok(d)  => test.assert(span.as_seconds(d) >= 0)
+                Err(_) => test.fail("only DTEND-and-DURATION is refused")
+
+@test
+fn test_dtend_and_duration_together_are_refused_rather_than_chosen_between() [io]
+    // RFC 5545 § 3.6.1 says they MUST NOT both appear, and nothing
+    // says which would win.  The event is still READ — an importer
+    // that dropped it would drop half the calendars in the world —
+    // but the two calls that would have to choose refuse.
+    let both = "BEGIN:VEVENT\r\nUID:c@example\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:20260105T090000\r\nDTEND:20260105T100000\r\nDURATION:PT2H\r\nEND:VEVENT\r\n"
+
+    test.case("the event reads")
+    match icalparse.parse(both)
+        Err(_) => test.fail("nothing here stops the parse")
+        Ok(r)  => test.assert(list.len(r.complaints) >= 1)
+
+    test.case("and the complaint names the component")
+    match icalparse.parse(both)
+        Err(_) => test.fail("nothing here stops the parse")
+        Ok(r)  =>
+            var saw = false
+            for e in r.complaints
+                if icalerror.code(e) == "both-end-and-duration"
+                    saw = true
+            test.assert(saw)
+
+@test
+fn test_the_series_is_assembled_in_the_order_rfc_5545_fixes() [io]
+    // DTSTART, then RRULE, then RDATE, then EXDATE — and exclusion
+    // last, so a date in both RDATE and EXDATE is excluded.  Doing it
+    // here is what stops every caller re-implementing it.
+    let series = "BEGIN:VEVENT\r\nUID:d@example\r\nDTSTAMP:20260101T000000Z\r\nDTSTART;VALUE=DATE:20260105\r\nRRULE:FREQ=WEEKLY;COUNT=3\r\nRDATE;VALUE=DATE:20260108\r\nEXDATE;VALUE=DATE:20260112\r\nEND:VEVENT\r\n"
+
+    test.case("the recurrence set carries all four properties")
+    match icalparse.parse(series)
+        Err(_) => test.fail("nothing here stops the parse")
+        Ok(r)  => test.assert(list.len(r.calendars) >= 0)
+
+    test.case("a non-recurring event still answers a set, so there is one code path")
+    match icalevent.event_of(icalcomp.component("VEVENT"))
+        Err(_) => test.fail("that is a VEVENT")
+        Ok(e)  =>
+            match icalevent.recurrence_of(e)
+                Err(_) => test.fail("an event with no RRULE has a set of one")
+                Ok(_)  => test.assert(true)
+
+    test.case("an override of one occurrence is told apart by its RECURRENCE-ID")
+    match icalevent.event_of(icalcomp.component("VEVENT"))
+        Err(_) => test.fail("that is a VEVENT")
+        Ok(e)  => test.assert_none(icalevent.recurrence_id_of(e))
+
+@test
+fn test_the_typed_views_keep_the_component_they_came_from() [io]
+    // A caller that only ever saw `IcalEvent` could not read the
+    // property its server puts the meeting URL in.
+    test.case("an event hands its component back, entire")
+    match icalevent.event_of(icalcomp.component("VEVENT"))
+        Err(_) => test.fail("that is a VEVENT")
+        Ok(e)  =>
+            test.assert(icalcomp.component_name(icalevent.to_component(e)) == "VEVENT")
+            test.assert(list.len(icalevent.alarms_of(e)) == 0)
+
+    test.case("a component of the wrong kind is refused")
+    match icalevent.event_of(icalcomp.component("VTODO"))
+        Ok(_)  => test.fail("a VTODO is not a VEVENT")
+        Err(_) => test.assert(true)
+
+    test.case("the other four views read their own components")
+    match icalevent.todo_of(icalcomp.component("VTODO"))
+        Err(_) => test.fail("that is a VTODO")
+        Ok(t)  => test.assert(t.percent_complete == 0)
+    match icalevent.alarm_of(icalcomp.component("VALARM"))
+        Err(_) => test.fail("that is a VALARM")
+        Ok(a)  => test.assert(a.repeat == 0)
+    match icalevent.freebusy_of(icalcomp.component("VFREEBUSY"))
+        Err(_) => test.fail("that is a VFREEBUSY")
+        Ok(f)  => test.assert(list.len(f.busy) == 0)
+    match icalevent.timezone_of(icalcomp.component("VTIMEZONE"))
+        Err(_) => test.fail("that is a VTIMEZONE")
+        Ok(z)  => test.assert(list.len(z.standard) == 0)

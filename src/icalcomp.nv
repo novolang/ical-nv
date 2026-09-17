@@ -1,0 +1,288 @@
+// icalcomp.nv — the component tree, and the rule that nothing is
+// thrown away.
+//
+// AN iCALENDAR OBJECT IS A TREE, AND THE TREE IS PUBLISHED
+//
+// RFC 5545 § 3.4 gives a calendar one shape: a `VCALENDAR` holding
+// components, each holding properties and, sometimes, more components
+// — a `VEVENT` holds a `VALARM`, a `VTIMEZONE` holds a `STANDARD` and
+// a `DAYLIGHT`.  The typed views in `icalevent` are built on top of
+// this tree and every one of them can hand the tree back, because a
+// caller that only ever saw `IcalEvent` could not read the property
+// its server puts the meeting URL in.
+//
+// A PROPERTY THAT DID NOT PARSE KEEPS ITS TEXT
+//
+// Half the calendars in the world carry something RFC 5545 does not
+// describe: an `X-` property, a registered property from a later
+// specification, a `DTSTART` written by a system that got the format
+// wrong.  Dropping any of them is how a round-trip loses somebody's
+// data, and how an importer silently discards the field the user
+// cared about most.
+//
+// So every property keeps its raw text beside its typed value.
+// `value_of` answers the typed value, `raw_of` answers what was in
+// the file, and a property whose value did not parse has a raw text
+// and a complaint in the read's list rather than no property at all.
+//
+// PARAMETERS ARE ORDERED AND THE ORDER IS NOT MEANINGFUL
+//
+// RFC 5545 § 3.2 puts no order on parameters.  They are kept in the
+// order they were written so that a reader can be shown the file,
+// and `param_of` finds one by name so that no caller depends on the
+// order.  A printed line emits them in the order it holds, so a
+// calendar built by this package prints deterministically.
+
+use icalline
+use icalvalue
+
+// One property of a component: a name, its parameters, its typed
+// value, and the text it was written as.
+//
+// ```novo
+// use icalcomp
+// use icalvalue
+//
+// fn main() [io]
+//     let p = icalcomp.property("SUMMARY", [], IcalTextVal("Team meeting"))
+//     println(p.name)                  // SUMMARY
+// ```
+pub struct IcalProperty
+    // The property name, upper-cased.
+    name: Str
+    // The parameters, in the order they were written.
+    params: [icalline.IcalParam]
+    // The typed value.  A property whose text did not parse as its
+    // type carries a TEXT value holding the raw text, and the read
+    // that produced it carries the complaint.
+    value: icalvalue.IcalValue
+    // The value as it stood in the file, still escaped.  `""` for a
+    // property this package built rather than read.
+    raw: Str
+    // Whether `value` is the result of a successful parse.  False for
+    // a property kept with its text after a refusal, and for an
+    // unknown property whose type nothing defines.
+    typed: Bool
+
+// One component: a name, its properties, and the components inside
+// it.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     println(icalcomp.component_name(icalcomp.component("VEVENT")))   // VEVENT
+// ```
+pub struct IcalComponent
+    // The component name, upper-cased: `"VCALENDAR"`, `"VEVENT"`,
+    // `"VALARM"`, `"STANDARD"`.
+    name: Str
+    // The properties, in the order they were written.
+    properties: [IcalProperty]
+    // The components inside this one, in the order they were written.
+    children: [IcalComponent]
+
+// A property with a typed value.
+//
+// ```novo
+// use icalcomp
+// use icalvalue
+//
+// fn main() [io]
+//     let p = icalcomp.property("PRIORITY", [], IcalIntegerVal(5))
+//     println("${p.typed}")            // true
+// ```
+pub fn property(name: Str, params: [icalline.IcalParam],
+                value: icalvalue.IcalValue) -> IcalProperty []
+    todo("ical-nv.icalcomp.property")
+
+// A property that kept its text because nothing typed it.
+//
+// What an `X-` property, a property from a later specification, and a
+// value that did not parse all become. `typed` is false and `raw` is
+// what was in the file.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     let p = icalcomp.property_raw("X-WR-CALNAME", [], "Team")
+//     println("${p.typed}")            // false
+// ```
+pub fn property_raw(name: Str, params: [icalline.IcalParam], raw: Str) -> IcalProperty []
+    todo("ical-nv.icalcomp.property_raw")
+
+// A property's typed value.
+//
+// ```novo
+// use icalcomp
+// use icalvalue
+//
+// fn main() [io]
+//     let p = icalcomp.property("SUMMARY", [], IcalTextVal("Team meeting"))
+//     println(icalvalue.kind_name(icalvalue.kind_of(icalcomp.value_of(p))))
+// ```
+pub fn value_of(p: IcalProperty) -> icalvalue.IcalValue []
+    todo("ical-nv.icalcomp.value_of")
+
+// A property's raw text, or `""` when it was not read from a file.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     println(icalcomp.raw_of(icalcomp.property_raw("X-THING", [], "1")))   // 1
+// ```
+pub fn raw_of(p: IcalProperty) -> Str []
+    todo("ical-nv.icalcomp.raw_of")
+
+// The value of a property's parameter, or `None`.
+//
+// ```novo
+// use icalcomp
+// use icalline
+// use icalvalue
+//
+// fn main() [io]
+//     let tz = icalline.param("TZID", ["Europe/Copenhagen"])
+//     let p = icalcomp.property("DTSTART", [tz], IcalTextVal("x"))
+//     match icalcomp.param_of(p, "TZID")
+//         Some(v) => println(v)        // Europe/Copenhagen
+//         None    => println("no TZID")
+// ```
+pub fn param_of(p: IcalProperty, name: Str) -> ?Str []
+    todo("ical-nv.icalcomp.param_of")
+
+// The zone identifier a property's `TZID` parameter names, or `""`.
+//
+// Published beside `param_of` because it is the parameter every
+// caller reads and because it is what decides the form of the value
+// beside it.
+//
+// ```novo
+// use icalcomp
+// use icalvalue
+//
+// fn main() [io]
+//     println(icalcomp.tzid_of(icalcomp.property("DTSTART", [], IcalTextVal("x"))))
+// ```
+pub fn tzid_of(p: IcalProperty) -> Str []
+    todo("ical-nv.icalcomp.tzid_of")
+
+// An empty component with a name.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     println("${icalcomp.property_count(icalcomp.component("VEVENT"))}")   // 0
+// ```
+pub fn component(name: Str) -> IcalComponent []
+    todo("ical-nv.icalcomp.component")
+
+// The same component with one more property, appended.
+//
+// ```novo
+// use icalcomp
+// use icalvalue
+//
+// fn main() [io]
+//     let c = icalcomp.with_property(icalcomp.component("VEVENT"),
+//                                    icalcomp.property("UID", [], IcalTextVal("a@b")))
+//     println("${icalcomp.property_count(c)}")     // 1
+// ```
+pub fn with_property(c: IcalComponent, p: IcalProperty) -> IcalComponent []
+    todo("ical-nv.icalcomp.with_property")
+
+// The same component with one more child, appended.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     let c = icalcomp.with_child(icalcomp.component("VEVENT"),
+//                                 icalcomp.component("VALARM"))
+//     println("${list.len(icalcomp.children_named(c, "VALARM"))}")    // 1
+// ```
+pub fn with_child(c: IcalComponent, child: IcalComponent) -> IcalComponent []
+    todo("ical-nv.icalcomp.with_child")
+
+// The first property with a name, or `None`.
+//
+// The first, because RFC 5545 allows most properties once per
+// component. `properties_named` is for the ones it allows many times
+// — `ATTENDEE`, `CATEGORIES`, `EXDATE`, `RDATE`, `RRULE` — and a
+// caller reading one of those with this function silently loses the
+// rest.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     match icalcomp.property_named(icalcomp.component("VEVENT"), "UID")
+//         Some(_) => println("found")
+//         None    => println("this component has no UID")
+// ```
+pub fn property_named(c: IcalComponent, name: Str) -> ?IcalProperty []
+    todo("ical-nv.icalcomp.property_named")
+
+// Every property with a name, in order.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     println("${list.len(icalcomp.properties_named(icalcomp.component("VEVENT"), "ATTENDEE"))}")
+// ```
+pub fn properties_named(c: IcalComponent, name: Str) -> [IcalProperty] []
+    todo("ical-nv.icalcomp.properties_named")
+
+// Every child component with a name, in order.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     println("${list.len(icalcomp.children_named(icalcomp.component("VCALENDAR"), "VEVENT"))}")
+// ```
+pub fn children_named(c: IcalComponent, name: Str) -> [IcalComponent] []
+    todo("ical-nv.icalcomp.children_named")
+
+// The component's name.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     println(icalcomp.component_name(icalcomp.component("VTIMEZONE")))
+// ```
+pub fn component_name(c: IcalComponent) -> Str []
+    todo("ical-nv.icalcomp.component_name")
+
+// How many properties the component holds.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     println("${icalcomp.property_count(icalcomp.component("VTODO"))}")    // 0
+// ```
+pub fn property_count(c: IcalComponent) -> Int []
+    todo("ical-nv.icalcomp.property_count")
+
+// The text of a component's TEXT-valued property, or `""`.
+//
+// The shortest path from a component to a summary, and the one a
+// caller writes over and over otherwise. `""` both for a property
+// that is absent and for one whose value is not TEXT, which is what a
+// renderer wants — the distinction is available through
+// `property_named` for a caller that needs it.
+//
+// ```novo
+// use icalcomp
+//
+// fn main() [io]
+//     println(icalcomp.text_property(icalcomp.component("VEVENT"), "SUMMARY"))
+// ```
+pub fn text_property(c: IcalComponent, name: Str) -> Str []
+    todo("ical-nv.icalcomp.text_property")

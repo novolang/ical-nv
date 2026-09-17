@@ -1,0 +1,407 @@
+// icalvalue.nv — the fourteen value types, and why a property value
+// is not a string.
+//
+// THE VALUE TYPE IS PART OF THE VALUE
+//
+// RFC 5545 § 3.3 defines fourteen value types, and § 3.2.20 lets a
+// `VALUE` parameter say which of them a property is carrying when the
+// property allows more than one.  The property most people meet is
+// `DTSTART`, which takes a DATE or a DATE-TIME:
+//
+//     DTSTART;VALUE=DATE:20260105
+//     DTSTART:20260105T090000
+//
+// The first is an all-day event on the 5th.  The second is an event
+// at nine in the morning.  A library that kept both as `Str`, or
+// widened both to a date-time with a midnight fallback, cannot tell
+// them apart — and the two are rendered differently, sorted
+// differently, and have different end dates.  So `IcalValue` is an
+// enum with one arm per value type, the `VALUE` parameter is honoured,
+// and a property carrying a type it may not carry is
+// `IcalValueKindMismatch` rather than a coercion.
+//
+// A DATE-TIME CARRIES ITS FORM, AND THERE ARE THREE
+//
+// RFC 5545 § 3.3.5 gives a DATE-TIME three forms: FLOATING (no zone —
+// nine in the morning wherever the reader is), UTC (a trailing `Z`),
+// and a local time with a `TZID` parameter naming a zone.  They are
+// three different meanings and they are distinguished in the text by
+// a single letter and a parameter, which is why every calendar
+// implementation has at some point read one as another.
+//
+// `IcalTimeForm` is a field of the value, so the distinction survives
+// the parse.  No conversion happens here: turning a zoned or floating
+// wall time into an instant is tz-nv's job and has its own two failure
+// cases, and a `core` package that folded it in could not be tested
+// without a zone database.
+//
+// THE RECUR TYPE IS rrule-nv's, NOT A STRING
+//
+// `RRULE:FREQ=WEEKLY;BYDAY=MO` carries a recurrence rule, and this
+// package hands back rrule-nv's `Rrule` rather than the text.  A
+// caller that got the text would have to parse it itself, and the two
+// parsers would disagree about what `BYDAY` means the first time one
+// of them was improved.
+
+use civil
+use icalerror
+use rrulespec
+use span
+
+// One of RFC 5545 § 3.3's fourteen value types.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     println(icalvalue.kind_name(IcalKindDateTime))    // DATE-TIME
+// ```
+pub enum IcalValueKind
+    // BINARY: base64, RFC 5545 § 3.3.1.  Carried as the base64 text
+    // rather than decoded, because a calendar holding an attachment
+    // is holding it to hand on.
+    IcalKindBinary
+    // BOOLEAN, § 3.3.2.  The text is `TRUE` or `FALSE`, upper case.
+    IcalKindBoolean
+    // CAL-ADDRESS, § 3.3.3: a URI, in practice `mailto:`.
+    IcalKindCalAddress
+    // DATE, § 3.3.4: a day with no time of day.
+    IcalKindDate
+    // DATE-TIME, § 3.3.5, in one of three forms.
+    IcalKindDateTime
+    // DURATION, § 3.3.6: an ISO 8601 duration, weeks or
+    // days/hours/minutes/seconds, never months.
+    IcalKindDuration
+    // FLOAT, § 3.3.7.
+    IcalKindFloat
+    // INTEGER, § 3.3.8.
+    IcalKindInteger
+    // PERIOD, § 3.3.9: a start and either an end or a duration.
+    IcalKindPeriod
+    // RECUR, § 3.3.10: a recurrence rule.
+    IcalKindRecur
+    // TEXT, § 3.3.11: escaped text.
+    IcalKindText
+    // TIME, § 3.3.12: a time of day with no date, in one of the same
+    // three forms as a DATE-TIME.
+    IcalKindTime
+    // URI, § 3.3.13.
+    IcalKindUri
+    // UTC-OFFSET, § 3.3.14: an offset from UTC in hours and minutes.
+    IcalKindUtcOffset
+
+// Which of RFC 5545 § 3.3.5's three forms a DATE-TIME or TIME is in.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     println(icalvalue.form_tzid(IcalZonedTime("Europe/Copenhagen")))
+// ```
+pub enum IcalTimeForm
+    // No zone at all: the wall time wherever the calendar is read.
+    // An all-day reminder and a recurring alarm are floating on
+    // purpose; a meeting that is floating by accident happens at the
+    // wrong hour for everybody who is not the author.
+    IcalFloatingTime
+    // A `Z` suffix: the instant, stated in UTC.
+    IcalUtcTime
+    // A local wall time in the zone a `TZID` parameter named.  The
+    // zone is carried as the identifier it was written with and is
+    // NOT resolved here; see the module comment.
+    IcalZonedTime(tzid: Str)
+
+// A PERIOD value: a start, and either an explicit end or a length.
+//
+// Both forms are kept as written, because RFC 5545 § 3.3.9 allows
+// both and a `FREEBUSY` that was sent as start/duration and comes
+// back as start/end is a different document for a signature to check.
+//
+// ```novo
+// use civil
+// use icalvalue
+//
+// fn main() [io]
+//     match civil.date(2026, 1, 5)
+//         Err(_) => println("not a date")
+//         Ok(d)  =>
+//             let at = civil.datetime(d, civil.midnight())
+//             println("${icalvalue.period_to(at, at).written_as_duration}")   // false
+// ```
+pub struct IcalPeriod
+    // When the period starts.
+    start: civil.CivilDateTime
+    // When it ends.  Computed from the start and the length when the
+    // period was written as a duration.
+    end: civil.CivilDateTime
+    // How long it lasts.  Computed from the two instants when the
+    // period was written as a pair.
+    length: span.TimeDelta
+    // Whether the text was `start/duration` rather than `start/end`.
+    written_as_duration: Bool
+
+// A property's value, with its type.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     println(icalvalue.kind_name(icalvalue.kind_of(IcalTextVal("hello"))))
+// ```
+pub enum IcalValue
+    // BINARY, as the base64 text.
+    IcalBinaryVal(base64: Str)
+    // BOOLEAN.
+    IcalBooleanVal(flag: Bool)
+    // CAL-ADDRESS.
+    IcalCalAddressVal(uri: Str)
+    // DATE: a day, and no time of day at all.  Not a date-time at
+    // midnight — see `icalevent.end_exclusive`, where the difference
+    // decides what day an all-day event ends on.
+    IcalDateVal(day: civil.CivilDate)
+    // DATE-TIME, with its form.
+    IcalDateTimeVal(at: civil.CivilDateTime, form: IcalTimeForm)
+    // DURATION.
+    IcalDurationVal(length: span.TimeDelta)
+    // FLOAT.
+    IcalFloatVal(number: Float)
+    // INTEGER.
+    IcalIntegerVal(number: Int)
+    // PERIOD.
+    IcalPeriodVal(period: IcalPeriod)
+    // RECUR, as rrule-nv's own rule rather than as text.
+    IcalRecurVal(rule: rrulespec.Rrule)
+    // TEXT, already unescaped.
+    IcalTextVal(text: Str)
+    // TIME, with its form.
+    IcalTimeVal(at: civil.CivilTime, form: IcalTimeForm)
+    // URI.
+    IcalUriVal(uri: Str)
+    // UTC-OFFSET, in minutes east of UTC.  Minutes rather than
+    // seconds because RFC 5545 § 3.3.14's seconds field is optional
+    // and almost never present, and minutes rather than a pair
+    // because arithmetic on a pair is where the sign goes wrong for
+    // `-0030`.
+    IcalUtcOffsetVal(minutes: Int)
+
+// The value type a property carries when no `VALUE` parameter says
+// otherwise, or `None` for a property this package does not know.
+//
+// RFC 5545 gives every registered property a default type.
+// `SUMMARY` is TEXT, `DTSTART` is DATE-TIME, `PRIORITY` is INTEGER.
+// `None` is not a refusal: an unknown property is kept with its raw
+// text, because a calendar is extensible and dropping `X-` properties
+// is how a round-trip loses somebody's data.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     match icalvalue.default_kind("DTSTART")
+//         Some(k) => println(icalvalue.kind_name(k))     // DATE-TIME
+//         None    => println("not a property this package knows")
+// ```
+pub fn default_kind(property: Str) -> ?IcalValueKind []
+    todo("ical-nv.icalvalue.default_kind")
+
+// The value types a `VALUE` parameter may name on a property.
+//
+// Empty for a property that allows no alternative, which is most of
+// them: RFC 5545 § 3.2.20 allows the parameter only where the
+// property defines alternatives. `DTSTART` answers DATE and
+// DATE-TIME; `SUMMARY` answers nothing, and `SUMMARY;VALUE=INTEGER`
+// is `IcalValueKindMismatch`.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     println("${list.len(icalvalue.allowed_kinds("DTSTART"))}")     // 2
+// ```
+pub fn allowed_kinds(property: Str) -> [IcalValueKind] []
+    todo("ical-nv.icalvalue.allowed_kinds")
+
+// The type's name as RFC 5545 spells it: `"DATE-TIME"`,
+// `"CAL-ADDRESS"`, `"UTC-OFFSET"` and the rest.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     println(icalvalue.kind_name(IcalKindUtcOffset))    // UTC-OFFSET
+// ```
+pub fn kind_name(k: IcalValueKind) -> Str []
+    todo("ical-nv.icalvalue.kind_name")
+
+// The type a name denotes, or `None`.
+//
+// Matched case-insensitively over ASCII, which RFC 5545 § 3.2.20's
+// grammar allows. `None` is `IcalUnknownValueType`.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     match icalvalue.kind_named("date")
+//         Some(k) => println(icalvalue.kind_name(k))     // DATE
+//         None    => println("not a value type")
+// ```
+pub fn kind_named(name: Str) -> ?IcalValueKind []
+    todo("ical-nv.icalvalue.kind_named")
+
+// Parse a raw property value as a type.
+//
+// The raw text is the content line's value, still escaped. `form` is
+// what a `TZID` parameter said, and is ignored for every type but
+// DATE-TIME and TIME.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     match icalvalue.parse_value(IcalKindDate, "20260105", IcalFloatingTime)
+//         Err(_) => println("not a date")
+//         Ok(v)  => println(icalvalue.print_value(v))    // 20260105
+// ```
+pub fn parse_value(k: IcalValueKind, raw: Str,
+                   form: IcalTimeForm) -> Result<IcalValue, icalerror.IcalError> []
+    todo("ical-nv.icalvalue.parse_value")
+
+// The value as RFC 5545 writes it, escaped where the type requires.
+//
+// The inverse of `parse_value` for every type, so a value read and
+// written back is the same text — which is not the same as saying a
+// FILE read and written back is the same bytes, because folding and
+// parameter order are not preserved. See `icalline`.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     println(icalvalue.print_value(IcalIntegerVal(5)))     // 5
+// ```
+pub fn print_value(v: IcalValue) -> Str []
+    todo("ical-nv.icalvalue.print_value")
+
+// The type of a value.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     println(icalvalue.kind_name(icalvalue.kind_of(IcalBooleanVal(true))))
+// ```
+pub fn kind_of(v: IcalValue) -> IcalValueKind []
+    todo("ical-nv.icalvalue.kind_of")
+
+// The text of a TEXT value, or `None` for any other type.
+//
+// `None` rather than a rendering, because a caller asking for the
+// summary of an event whose `SUMMARY` turned out to be a URI wants to
+// know that rather than to be handed the URI as if it were a
+// sentence.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     match icalvalue.text_of(IcalTextVal("Team meeting"))
+//         Some(t) => println(t)              // Team meeting
+//         None    => println("not a TEXT value")
+// ```
+pub fn text_of(v: IcalValue) -> ?Str []
+    todo("ical-nv.icalvalue.text_of")
+
+// The day of a DATE value, or `None`.
+//
+// A DATE-TIME answers `None` here and `datetime_of` answers it
+// instead, which is the whole point: a caller that wants the all-day
+// reading has to ask for it.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     match icalvalue.date_of(IcalTextVal("x"))
+//         Some(_) => println("this cannot happen")
+//         None    => println("not a DATE value")
+// ```
+pub fn date_of(v: IcalValue) -> ?civil.CivilDate []
+    todo("ical-nv.icalvalue.date_of")
+
+// The instant of a DATE-TIME value, or `None`.
+//
+// The wall time as written. Its form is `form_of`, and this package
+// never converts between forms.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     match icalvalue.datetime_of(IcalTextVal("x"))
+//         Some(_) => println("this cannot happen")
+//         None    => println("not a DATE-TIME value")
+// ```
+pub fn datetime_of(v: IcalValue) -> ?civil.CivilDateTime []
+    todo("ical-nv.icalvalue.datetime_of")
+
+// The form of a DATE-TIME or TIME value, or `None` for any other.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     match icalvalue.form_of(IcalIntegerVal(1))
+//         Some(_) => println("this cannot happen")
+//         None    => println("only a DATE-TIME or a TIME has a form")
+// ```
+pub fn form_of(v: IcalValue) -> ?IcalTimeForm []
+    todo("ical-nv.icalvalue.form_of")
+
+// The zone identifier a form names, or `""` for floating and UTC.
+//
+// A `Str` and not a resolved zone: this package holds the identifier
+// the calendar was written with, and tz-nv is what turns one into an
+// offset.
+//
+// ```novo
+// use icalvalue
+//
+// fn main() [io]
+//     println(icalvalue.form_tzid(IcalUtcTime))      // (empty)
+// ```
+pub fn form_tzid(f: IcalTimeForm) -> Str []
+    todo("ical-nv.icalvalue.form_tzid")
+
+// A period written as a start and an end.
+//
+// ```novo
+// use civil
+// use icalvalue
+//
+// fn main() [io]
+//     match civil.date(2026, 1, 5)
+//         Err(_) => println("not a date")
+//         Ok(d)  =>
+//             let at = civil.datetime(d, civil.midnight())
+//             println("${icalvalue.period_to(at, at).written_as_duration}")
+// ```
+pub fn period_to(start: civil.CivilDateTime, end: civil.CivilDateTime) -> IcalPeriod []
+    todo("ical-nv.icalvalue.period_to")
+
+// A period written as a start and a length.
+//
+// ```novo
+// use civil
+// use icalvalue
+// use span
+//
+// fn main() [io]
+//     match civil.date(2026, 1, 5)
+//         Err(_) => println("not a date")
+//         Ok(d)  =>
+//             let at = civil.datetime(d, civil.midnight())
+//             println("${icalvalue.period_for(at, span.hours(1)).written_as_duration}")
+// ```
+pub fn period_for(start: civil.CivilDateTime, length: span.TimeDelta) -> IcalPeriod []
+    todo("ical-nv.icalvalue.period_for")

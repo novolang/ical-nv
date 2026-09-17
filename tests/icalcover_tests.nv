@@ -1,0 +1,122 @@
+// icalcover_tests.nv — the component tree, the writer, and the rest
+// of the error surface, one case each.
+//
+// RED ON PURPOSE.
+//
+// The three suites beside this one assert the DESIGN — the content
+// line, the typed value, the exclusive end.  This one exists so that
+// no public function ships without a written expectation of what it
+// answers.
+
+use std.test
+use icalcomp
+use icalerror
+use icalline
+use icalparse
+use icalvalue
+
+@test
+fn test_a_property_keeps_its_text_as_well_as_its_value() [io]
+    // Dropping an X- property is how a round-trip loses somebody's
+    // data, and how an importer silently discards the field the user
+    // cared about most.
+    test.case("a typed property carries a value and is marked typed")
+    let p = icalcomp.property("PRIORITY", [], IcalIntegerVal(5))
+    test.assert(p.typed)
+    test.assert(icalvalue.kind_name(icalvalue.kind_of(icalcomp.value_of(p))) == "INTEGER")
+
+    test.case("a raw property carries its text and is not")
+    let x = icalcomp.property_raw("X-WR-CALNAME", [], "Team")
+    test.assert(x.typed == false)
+    test.assert(icalcomp.raw_of(x) == "Team")
+
+    test.case("a parameter is found by name, not by position")
+    let tz = icalline.param("TZID", ["Europe/Copenhagen"])
+    let dt = icalcomp.property("DTSTART", [tz], IcalTextVal("x"))
+    match icalcomp.param_of(dt, "TZID")
+        Some(v) => test.assert(v == "Europe/Copenhagen")
+        None    => test.fail("the TZID parameter is there")
+    test.assert_none(icalcomp.param_of(dt, "VALUE"))
+
+    test.case("and the TZID has its own call, because every caller reads it")
+    test.assert(icalcomp.tzid_of(dt) == "Europe/Copenhagen")
+    test.assert(icalcomp.tzid_of(icalcomp.property("SUMMARY", [], IcalTextVal("x"))) == "")
+
+@test
+fn test_a_component_holds_properties_and_children_in_order() [io]
+    test.case("an empty component has neither")
+    let empty = icalcomp.component("VEVENT")
+    test.assert(icalcomp.property_count(empty) == 0)
+    test.assert(list.len(icalcomp.children_named(empty, "VALARM")) == 0)
+
+    test.case("properties append")
+    let one = icalcomp.with_property(empty, icalcomp.property("UID", [], IcalTextVal("a@b")))
+    test.assert(icalcomp.property_count(one) == 1)
+
+    test.case("children append")
+    let withalarm = icalcomp.with_child(one, icalcomp.component("VALARM"))
+    test.assert(list.len(icalcomp.children_named(withalarm, "VALARM")) == 1)
+
+    test.case("the first of a name, for a property RFC 5545 allows once")
+    match icalcomp.property_named(one, "UID")
+        Some(p) => test.assert(p.name == "UID")
+        None    => test.fail("the UID is there")
+    test.assert_none(icalcomp.property_named(one, "SUMMARY"))
+
+    test.case("every one of a name, for a property it allows many times")
+    let two = icalcomp.with_property(
+                  icalcomp.with_property(empty,
+                      icalcomp.property("ATTENDEE", [], IcalCalAddressVal("mailto:a@x"))),
+                  icalcomp.property("ATTENDEE", [], IcalCalAddressVal("mailto:b@x")))
+    test.assert(list.len(icalcomp.properties_named(two, "ATTENDEE")) == 2)
+
+    test.case("the shortest path from a component to a summary")
+    let s = icalcomp.with_property(empty, icalcomp.property("SUMMARY", [], IcalTextVal("Team")))
+    test.assert(icalcomp.text_property(s, "SUMMARY") == "Team")
+
+    test.case("and a property that is absent, or is not TEXT, is the empty string")
+    test.assert(icalcomp.text_property(empty, "SUMMARY") == "")
+    test.assert(icalcomp.text_property(one, "UID") == "a@b")
+
+@test
+fn test_a_calendar_this_package_builds_is_conformant_from_its_first_line() [io]
+    test.case("`calendar` sets the two properties RFC 5545 § 3.6 requires")
+    let c = icalparse.calendar("-//Example Corp//Planner 1.0//EN")
+    test.assert(icalparse.version_of(c) == "2.0")
+    test.assert(icalparse.prodid_of(c) == "-//Example Corp//Planner 1.0//EN")
+    test.assert(list.len(icalparse.check(c)) == 0)
+
+    test.case("and a bare VCALENDAR is complained about rather than refused")
+    let bare = icalcomp.component("VCALENDAR")
+    test.assert(icalparse.prodid_of(bare) == "")
+    test.assert(list.len(icalparse.check(bare)) == 2)
+
+    test.case("printing folds at the width it is given and ends its lines with CRLF")
+    let text = icalparse.print(c, icalline.fold_width())
+    test.assert(str.contains(text, "BEGIN:VCALENDAR"))
+    test.assert(str.contains(text, "\r\n"))
+
+@test
+fn test_the_error_surface_reports_where_and_how_badly() [io]
+    test.case("a complaint has a sentence")
+    test.assert(str.len(icalerror.message(IcalUnsupportedVersion("1.0"))) > 0)
+    test.assert(str.len(icalerror.message(
+        IcalMissingRequiredProperty("VEVENT", "UID"))) > 0)
+
+    test.case("a line fault carries both line numbers, because folding moves one")
+    // A physical line number points at a continuation, which is not
+    // where the fault is; a logical one points at a line the user
+    // cannot find in their editor.  Both are carried.
+    test.assert(icalerror.line_of(IcalMalformedLine(4, 6, "no colon")) == 4)
+
+    test.case("a complaint that is not about a line answers zero")
+    test.assert(icalerror.line_of(IcalUnsupportedVersion("1.0")) == 0)
+
+    test.case("only the three that stop the parse are fatal")
+    test.assert(icalerror.is_fatal(IcalUnbalancedComponent("VEVENT", "VTODO")))
+    test.assert(icalerror.is_fatal(IcalUnterminatedParam(2, 2)))
+    test.assert(icalerror.is_fatal(IcalBadValue("DTSTART", "DATE", "x")) == false)
+    test.assert(icalerror.code(IcalEndBeforeStart("VEVENT")) == "end-before-start")
+    test.assert(icalerror.code(IcalValueKindMismatch("SUMMARY", "INTEGER", ""))
+                == "value-kind-mismatch")
+    test.assert(icalerror.code(IcalUnknownValueType("TIMESTAMP")) == "unknown-value-type")

@@ -1,0 +1,175 @@
+// icalparse.nv — reading and writing a whole stream.
+//
+// A READ ANSWERS THE CALENDAR AND THE COMPLAINTS, BOTH
+//
+// Almost every `.ics` file in the world is wrong about something.  A
+// missing `DTSTAMP`, a `VERSION` that is not `2.0`, an event with no
+// `UID`, a `DTSTART` written in a format nobody registered: none of
+// them stops the events being read, and all of them are worth knowing
+// about.
+//
+// A reader that refused all of them would be a reader nobody could
+// use; a reader that reported none of them would leave its caller
+// unable to tell a clean import from a lossy one.  So `parse` answers
+// an `IcalRead` — the calendars it built AND the list of what it
+// complained about — and `Err` is kept for the three faults that stop
+// the parse.  `parse_strict` is the other reader, for a caller
+// checking its OWN output, where a complaint is a bug.
+//
+// A STREAM MAY HOLD MORE THAN ONE CALENDAR
+//
+// RFC 5545 § 3.4 describes one iCalendar object per stream and § 3.1
+// permits several, and mail attachments carry both shapes.  A parser
+// that returned the first silently drops the rest, which is how a
+// meeting invitation with its time-zone definition in a second object
+// loses the zone.  So `IcalRead.calendars` is a list.
+//
+// PRINTING IS DETERMINISTIC AND NOT BYTE-PRESERVING
+//
+// A calendar printed by this package is the same bytes every time,
+// which is what makes a golden test possible.  It is not the bytes it
+// was read from: the fold points move, parameters print in the order
+// they are held, and a value that parsed prints canonically.  That is
+// stated here rather than found by a caller diffing two files, and a
+// caller that must reproduce the original keeps the original.
+
+use icalcomp
+use icalerror
+
+// What a read produced: the calendars, and everything the reader
+// complained about.
+//
+// ```novo
+// use icalparse
+//
+// fn main() [io]
+//     match icalparse.parse("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+//         Err(_) => println("the stream could not be read at all")
+//         Ok(r)  => println("${list.len(r.calendars)}")     // 1
+// ```
+pub struct IcalRead
+    // The `VCALENDAR` components found, in order. More than one is
+    // legal and is what a mail attachment often carries.
+    calendars: [icalcomp.IcalComponent]
+    // Everything that was wrong and did not stop the read, in the
+    // order it was met. Empty for a conformant file.
+    complaints: [icalerror.IcalError]
+
+// Read a stream, keeping what can be kept.
+//
+// `Err` only for a fault that stops the parse: a content line with no
+// colon, an unterminated quoted parameter, or a `BEGIN` and `END`
+// that do not match. Everything else is a complaint beside the
+// calendar.
+//
+// ```novo
+// use icalparse
+//
+// fn main() [io]
+//     match icalparse.parse("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n")
+//         Err(_) => println("the stream could not be read at all")
+//         Ok(r)  => println("${list.len(r.complaints)}")
+// ```
+pub fn parse(stream: Str) -> Result<IcalRead, icalerror.IcalError> []
+    todo("ical-nv.icalparse.parse")
+
+// Read a stream, refusing anything non-conformant.
+//
+// The reader for a caller checking its own output, where every
+// complaint is a bug in the writer. Answers the first complaint as
+// the refusal.
+//
+// ```novo
+// use icalparse
+//
+// fn main() [io]
+//     match icalparse.parse_strict("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+//         Ok(_)  => println("conformant")
+//         Err(_) => println("that calendar has no PRODID and no VERSION")
+// ```
+pub fn parse_strict(stream: Str) -> Result<[icalcomp.IcalComponent], icalerror.IcalError> []
+    todo("ical-nv.icalparse.parse_strict")
+
+// Print a calendar, folded.
+//
+// Lines are folded at `fold_at` octets on character boundaries, and
+// separated by CRLF, which RFC 5545 § 3.1 requires. Pass
+// `icalline.fold_width()` for the specification's 75.
+//
+// ```novo
+// use icalcomp
+// use icalline
+// use icalparse
+//
+// fn main() [io]
+//     let c = icalcomp.component("VCALENDAR")
+//     println("${str.len(icalparse.print(c, icalline.fold_width()))}")
+// ```
+pub fn print(calendar: icalcomp.IcalComponent, fold_at: Int) -> Str []
+    todo("ical-nv.icalparse.print")
+
+// Every complaint a strict read would make about a component tree.
+//
+// Runs over a calendar this package BUILT, which is what a writer
+// wants before it sends one: the required properties of every
+// component, the `DTEND`/`DURATION` rule, the `VERSION` value, and an
+// end before its start. Empty for a conformant calendar.
+//
+// ```novo
+// use icalcomp
+// use icalparse
+//
+// fn main() [io]
+//     println("${list.len(icalparse.check(icalcomp.component("VCALENDAR")))}")
+// ```
+pub fn check(calendar: icalcomp.IcalComponent) -> [icalerror.IcalError] []
+    todo("ical-nv.icalparse.check")
+
+// The `PRODID` of a calendar, or `""`.
+//
+// RFC 5545 § 3.7.3 requires it, and it is the one field that says
+// which software wrote the file — the first thing anybody looks at
+// when a calendar behaves oddly.
+//
+// ```novo
+// use icalcomp
+// use icalparse
+//
+// fn main() [io]
+//     println(icalparse.prodid_of(icalcomp.component("VCALENDAR")))
+// ```
+pub fn prodid_of(calendar: icalcomp.IcalComponent) -> Str []
+    todo("ical-nv.icalparse.prodid_of")
+
+// The `VERSION` of a calendar, or `""`.
+//
+// RFC 5545 § 3.7.4 fixes the value at `"2.0"`. A different one is a
+// complaint and not a refusal, because the file is almost always 2.0
+// anyway.
+//
+// ```novo
+// use icalcomp
+// use icalparse
+//
+// fn main() [io]
+//     println(icalparse.version_of(icalcomp.component("VCALENDAR")))
+// ```
+pub fn version_of(calendar: icalcomp.IcalComponent) -> Str []
+    todo("ical-nv.icalparse.version_of")
+
+// An empty `VCALENDAR` carrying a `PRODID` and `VERSION:2.0`.
+//
+// The two properties RFC 5545 § 3.6 requires, so that a calendar this
+// package builds is conformant from its first line rather than from
+// whenever the caller remembered.
+//
+// ```novo
+// use icalcomp
+// use icalparse
+//
+// fn main() [io]
+//     let c = icalparse.calendar("-//Example Corp//Planner 1.0//EN")
+//     println(icalparse.version_of(c))       // 2.0
+// ```
+pub fn calendar(prodid: Str) -> icalcomp.IcalComponent []
+    todo("ical-nv.icalparse.calendar")

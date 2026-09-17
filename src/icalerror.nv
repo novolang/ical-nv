@@ -1,0 +1,132 @@
+// icalerror.nv — every way a calendar can be refused, and the
+// difference between a file that is broken and a file that is merely
+// not conformant.
+//
+// TWO KINDS OF WRONG, AND ONLY ONE OF THEM STOPS A READ
+//
+// A `.ics` file arrives from somewhere else.  Half the calendars in
+// the world are written by software that gets some part of RFC 5545
+// wrong, and a reader that refused all of them would be a reader
+// nobody could use: a missing `DTSTAMP`, a `VERSION` that is not
+// `2.0`, a `VEVENT` with no `UID`.  None of those stops the events
+// being read, and all of them are worth knowing about.
+//
+// A malformed content line does stop it, because the parser cannot
+// tell where the value ends.
+//
+// So `is_fatal` divides the two, `icalparse.parse` answers the events
+// AND the complaints, and `icalparse.parse_strict` is the reader that
+// refuses everything.  A caller importing a subscription takes the
+// first; a caller validating its own output takes the second.
+//
+// THE LINE NUMBER IS THE UNFOLDED ONE, AND THAT IS SAID OUT LOUD
+//
+// RFC 5545 § 3.1 folds a long line across several physical lines.  A
+// complaint carrying the physical line number points at a
+// continuation, which is not where the fault is; one carrying the
+// logical number points at a line the user cannot find in their
+// editor.  Both numbers are carried, so a message can say either.
+
+// Why a calendar, a component or a value was refused.
+//
+// ```novo
+// use icalerror
+//
+// fn main() [io]
+//     println(icalerror.message(IcalUnbalancedComponent("VEVENT", "VTODO")))
+// ```
+pub enum IcalError
+    // A content line has no colon, so the parser cannot tell the
+    // property name from its value.  FATAL: everything after it is
+    // guesswork.
+    IcalMalformedLine(logical_line: Int, physical_line: Int, why: Str)
+    // A parameter's quoted value has no closing quote.  FATAL, for
+    // the same reason: the value swallows the rest of the file.
+    IcalUnterminatedParam(logical_line: Int, physical_line: Int)
+    // An `END` names a component that is not the one that was begun,
+    // or a `BEGIN` was never ended.  FATAL: the component tree cannot
+    // be built.
+    IcalUnbalancedComponent(expected: Str, found: Str)
+    // A value does not parse as the type its property takes — a
+    // `DTSTART` that is not a date, a `PRIORITY` that is not an
+    // integer.  Not fatal: the property is kept with its raw text and
+    // the complaint says which.
+    IcalBadValue(property: Str, kind: Str, text: Str)
+    // A `VALUE` parameter names a type the property may not take.
+    // RFC 5545 § 3.2.20 allows the parameter only where the property
+    // defines alternatives, and `DTSTART;VALUE=INTEGER` is not one.
+    IcalValueKindMismatch(property: Str, declared: Str, allowed: Str)
+    // A `VALUE` parameter names a type RFC 5545 does not define.
+    IcalUnknownValueType(name: Str)
+    // A required property is absent.  RFC 5545 § 3.6.1 requires `UID`
+    // and `DTSTAMP` in every `VEVENT`; § 3.6 requires `PRODID` and
+    // `VERSION` in the `VCALENDAR`.  Not fatal, and very common.
+    IcalMissingRequiredProperty(component: Str, property: Str)
+    // `VERSION` is present and is not `2.0`.  RFC 5545 § 3.7.4 fixes
+    // the value.  Not fatal: the file is almost always 2.0 anyway.
+    IcalUnsupportedVersion(version: Str)
+    // A component carries both `DTEND` and `DURATION`.  RFC 5545
+    // § 3.6.1 says they MUST NOT appear together, because they are
+    // two answers to one question and nothing says which wins.
+    IcalBothEndAndDuration(component: Str)
+    // `DTEND` is before `DTSTART`, or a `DURATION` is negative where
+    // RFC 5545 § 3.6.1 requires a positive one.
+    IcalEndBeforeStart(component: Str)
+
+// The refusal as a sentence, ending without a full stop, suitable for
+// a log line or an error message the caller composes.
+//
+// ```novo
+// use icalerror
+//
+// fn main() [io]
+//     println(icalerror.message(IcalUnsupportedVersion("1.0")))
+// ```
+pub fn message(e: IcalError) -> Str []
+    todo("ical-nv.icalerror.message")
+
+// A short stable identifier for the refusal: `"malformed-line"`,
+// `"bad-value"`, `"missing-required-property"` and the rest.
+//
+// Stable across releases, so a caller may branch on it and a test may
+// assert it.
+//
+// ```novo
+// use icalerror
+//
+// fn main() [io]
+//     println(icalerror.code(IcalMissingRequiredProperty("VCALENDAR", "PRODID")))
+// ```
+pub fn code(e: IcalError) -> Str []
+    todo("ical-nv.icalerror.code")
+
+// Whether the refusal stops the file being read at all.
+//
+// True for the three the parser cannot continue past.  False for the
+// rest, which `icalparse.parse` collects and carries beside the
+// calendar it built, and which `icalparse.parse_strict` turns into a
+// refusal.
+//
+// ```novo
+// use icalerror
+//
+// fn main() [io]
+//     println("${icalerror.is_fatal(IcalUnsupportedVersion("1.0"))}")    // false
+// ```
+pub fn is_fatal(e: IcalError) -> Bool []
+    todo("ical-nv.icalerror.is_fatal")
+
+// Which logical line the refusal is on, counting unfolded lines from
+// one, or zero when it is not about a line at all.
+//
+// The physical line is in the variant beside it, for a message that
+// wants to point at what is actually in the file.
+//
+// ```novo
+// use icalerror
+//
+// fn main() [io]
+//     println("${icalerror.line_of(IcalMalformedLine(4, 6, "no colon"))}")   // 4
+// ```
+pub fn line_of(e: IcalError) -> Int []
+    todo("ical-nv.icalerror.line_of")

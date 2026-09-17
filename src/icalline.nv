@@ -1,0 +1,259 @@
+// icalline.nv — the content line: folding, escaping, and the three
+// parts every property is made of.
+//
+// FOLDING IS COUNTED IN OCTETS AND CUT ON CHARACTER BOUNDARIES
+//
+// RFC 5545 § 3.1 says a line longer than 75 OCTETS is folded: the
+// line is broken, a CRLF is inserted, and the next line begins with
+// one space or one horizontal tab which is not part of the value.
+//
+// Both halves of that sentence are traps.  An implementation that
+// counts CHARACTERS produces lines of up to 300 octets, which a
+// strict reader refuses and which some transports truncate.  An
+// implementation that counts octets and cuts wherever the count runs
+// out splits a multi-byte UTF-8 character down the middle, and the
+// two halves are not text in any encoding — the calendar arrives with
+// a replacement character in the middle of somebody's name.
+//
+// So `fold` counts octets and cuts only on a character boundary, and
+// the width is a parameter with 75 as its default, because the one
+// thing a caller reproducing another system's output needs is a
+// different width.
+//
+// UNFOLDING IS NOT THE INVERSE OF FOLDING, AND THAT IS THE POINT
+//
+// `unfold` removes a CRLF followed by ONE space or tab.  It does not
+// remove any other whitespace, and it does not care where the folds
+// were: a value refolded at a different width unfolds to the same
+// text.  That asymmetry is why a round-trip through this package is
+// value-preserving and not byte-preserving, and it is stated here
+// rather than discovered by a caller comparing two files.
+//
+// ESCAPING IS THE OTHER LOSSY HALF
+//
+// A TEXT value escapes four things: a backslash, a semicolon, a comma
+// and a newline (RFC 5545 § 3.3.11).  The comma is the one that
+// matters, because an unescaped comma does not corrupt the file — it
+// turns ONE value into a LIST of two, and the reader on the other end
+// gets an event whose description has become two descriptions with no
+// error anywhere.  `escape_text` is not optional for a writer, and
+// `unescape_text` is separate from `parse_line` so that a caller
+// holding a multi-value property can split first and unescape after,
+// which is the only order that works.
+
+use icalerror
+
+// One parameter of a content line: a name and one or more values.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     let p = icalline.param("TZID", ["Europe/Copenhagen"])
+//     println(p.name)                 // TZID
+// ```
+pub struct IcalParam
+    // The parameter name, upper-cased.  RFC 5545 § 3.2 makes
+    // parameter names case-insensitive, and keeping them in one case
+    // is what lets a lookup be a comparison.
+    name: Str
+    // The values, already unquoted.  RFC 5545 § 3.2 allows a
+    // comma-separated list, and a parameter whose value contains a
+    // colon, a semicolon or a comma arrives quoted.
+    values: [Str]
+
+// One content line, unfolded and split: a name, its parameters, and
+// its value as raw text.
+//
+// The value is RAW — still escaped, and not yet interpreted as any
+// value type.  Turning it into a typed value is `icalvalue`'s job and
+// needs to know the property, which this module deliberately does not.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     match icalline.parse_line("SUMMARY;LANGUAGE=en:Team meeting")
+//         Err(_) => println("not a content line")
+//         Ok(l)  => println(l.name)          // SUMMARY
+// ```
+pub struct IcalLine
+    // The property name, upper-cased: `"SUMMARY"`, `"DTSTART"`,
+    // `"BEGIN"`.
+    name: Str
+    // The parameters, in the order they were written.
+    params: [IcalParam]
+    // The value, unfolded and still escaped.
+    value: Str
+
+// A parameter value.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     println("${list.len(icalline.param("VALUE", ["DATE"]).values)}")    // 1
+// ```
+pub fn param(name: Str, values: [Str]) -> IcalParam []
+    todo("ical-nv.icalline.param")
+
+// Split one unfolded content line into its name, parameters and
+// value.
+//
+// Takes a LOGICAL line — one that has already been through `unfold`.
+// Refuses a line with no colon, because the parser cannot then tell
+// where the name ends, and a line whose quoted parameter value is
+// never closed.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     match icalline.parse_line("DTSTART;VALUE=DATE:20260105")
+//         Err(_) => println("not a content line")
+//         Ok(l)  => println(l.value)         // 20260105
+// ```
+pub fn parse_line(logical: Str) -> Result<IcalLine, icalerror.IcalError> []
+    todo("ical-nv.icalline.parse_line")
+
+// Print one content line, unfolded.
+//
+// Quotes a parameter value that contains a colon, a semicolon or a
+// comma, which RFC 5545 § 3.2 requires and which is the half of
+// parameter writing that is easy to leave out — a `TZID` of
+// `"Europe/Copenhagen"` needs no quotes and an `ALTREP` URI always
+// does.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     let l = icalline.line("SUMMARY", [], "Team meeting")
+//     println(icalline.print_line(l))        // SUMMARY:Team meeting
+// ```
+pub fn print_line(l: IcalLine) -> Str []
+    todo("ical-nv.icalline.print_line")
+
+// A content line value.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     println(icalline.line("UID", [], "abc@example").name)     // UID
+// ```
+pub fn line(name: Str, params: [IcalParam], value: Str) -> IcalLine []
+    todo("ical-nv.icalline.line")
+
+// The value of the first parameter with a name, or `None`.
+//
+// The first, because RFC 5545 allows a parameter at most once per
+// property and a file that repeats one is answered rather than
+// refused — losing an event to a duplicated `TZID` helps nobody.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     let l = icalline.line("DTSTART", [icalline.param("TZID", ["UTC"])], "20260105")
+//     match icalline.param_value(l, "TZID")
+//         Some(v) => println(v)              // UTC
+//         None    => println("no TZID")
+// ```
+pub fn param_value(l: IcalLine, name: Str) -> ?Str []
+    todo("ical-nv.icalline.param_value")
+
+// Fold a line to a maximum octet width.
+//
+// The width counts octets, not characters, and the cut is always on a
+// character boundary, so a folded line is still UTF-8 and is still no
+// longer than the width. The continuation lines each begin with one
+// space. RFC 5545 § 3.1's width is 75; it is an argument because a
+// caller reproducing another system's output needs a different one.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     println("${str.len(icalline.fold("SUMMARY:short", 75))}")
+// ```
+pub fn fold(logical: Str, width: Int) -> Str []
+    todo("ical-nv.icalline.fold")
+
+// Unfold a stream into logical lines.
+//
+// Removes a CRLF followed by exactly one space or one horizontal tab.
+// A bare LF is accepted as a line break too, because half the
+// calendars in the world are written with one, and no other
+// whitespace is touched.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     println("${list.len(icalline.unfold("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))}")
+// ```
+pub fn unfold(stream: Str) -> [Str] []
+    todo("ical-nv.icalline.unfold")
+
+// RFC 5545 § 3.1's fold width, 75 octets.
+//
+// Published as a function rather than left as a literal in every
+// call, so a caller reading this package's own output knows what it
+// used.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     println("${icalline.fold_width()}")    // 75
+// ```
+pub fn fold_width() -> Int []
+    todo("ical-nv.icalline.fold_width")
+
+// Escape a TEXT value: backslash, semicolon, comma and newline.
+//
+// RFC 5545 § 3.3.11. A newline becomes `\n`. A writer that skips this
+// does not produce a broken file: an unescaped comma turns one value
+// into a list of two, and the reader at the other end gets two
+// descriptions where there was one, with nothing raised.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     println(icalline.escape_text("Tea, then cake"))    // Tea\, then cake
+// ```
+pub fn escape_text(text: Str) -> Str []
+    todo("ical-nv.icalline.escape_text")
+
+// Unescape a TEXT value.
+//
+// Accepts `\N` as well as `\n`, which RFC 5545 § 3.3.11 permits. A
+// backslash before anything else is kept as written rather than
+// dropped, because dropping it silently loses a character from a
+// Windows path somebody pasted into a description.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     println(icalline.unescape_text("Tea\\, then cake"))   // Tea, then cake
+// ```
+pub fn unescape_text(text: Str) -> Str []
+    todo("ical-nv.icalline.unescape_text")
+
+// Split a multi-value property's raw value on unescaped commas.
+//
+// The order that works: split first, unescape after. A caller that
+// unescapes first cannot tell an escaped comma from a separator any
+// more, and quietly turns one value into two.
+//
+// ```novo
+// use icalline
+//
+// fn main() [io]
+//     println("${list.len(icalline.split_values("one,two,three"))}")    // 3
+// ```
+pub fn split_values(raw: Str) -> [Str] []
+    todo("ical-nv.icalline.split_values")

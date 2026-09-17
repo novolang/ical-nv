@@ -1,0 +1,442 @@
+// icalevent.nv — the typed views, and the off-by-one every calendar
+// has shipped.
+//
+// `DTEND` IS EXCLUSIVE, AND FOR AN ALL-DAY EVENT THAT MEANS THE NEXT
+// DAY
+//
+// RFC 5545 § 3.6.1 says the `DTEND` of a `VEVENT` is the
+// NON-INCLUSIVE end.  For a timed event that surprises nobody: an
+// event from 09:00 to 10:00 has `DTEND:...T100000` and lasts an hour.
+// For an all-day event it is the single most common bug in calendar
+// software:
+//
+//     DTSTART;VALUE=DATE:20260105
+//     DTEND;VALUE=DATE:20260106
+//
+// is ONE day, the 5th.  A reader that renders `DTEND` as the last day
+// puts the event on the 5th and the 6th, and a writer that emits the
+// last day produces an event that everybody else renders one day
+// short.  Neither raises anything.  Both are wrong in a direction the
+// author never sees, because their own software round-trips its own
+// mistake.
+//
+// So `end_exclusive` is the name of the call — the name says which
+// convention it answers — and `last_day` is published beside it for
+// the renderer, which wants the other one.  A `VEVENT` with neither
+// `DTEND` nor `DURATION` is not an error: § 3.6.1 gives it a default
+// of one day for a date-valued start and zero length for a timed one,
+// and that default is computed here rather than left to each caller.
+//
+// `DTEND` AND `DURATION` MUST NOT BOTH APPEAR
+//
+// § 3.6.1 says so, and nothing says which would win.  `event_of` does
+// not refuse a component carrying both — the events still want
+// reading — but `end_exclusive` and `duration_of` do, with
+// `IcalBothEndAndDuration`, because answering either would be
+// choosing for the caller.
+//
+// THE RECURRENCE IS ASSEMBLED HERE, NOT BY THE CALLER
+//
+// An event's series is its `DTSTART`, its `RRULE`s, its `RDATE`s and
+// its `EXDATE`s, combined in the order RFC 5545 § 3.8.5 fixes.
+// `recurrence_of` hands back an rrule-nv `RruleSet` with all four
+// already in place, so no caller re-implements that order and no
+// caller forgets that `EXDATE` is applied last.
+
+use civil
+use icalcomp
+use icalerror
+use icalvalue
+use rruleset
+use span
+
+// A `VEVENT`, read.
+//
+// The component is carried, so a caller that needs a property this
+// view does not name reads it from there.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VEVENT"))
+//         Err(_) => println("not a usable VEVENT")
+//         Ok(e)  => println(e.summary)
+// ```
+pub struct IcalEvent
+    // `UID`, RFC 5545 § 3.8.4.7.  `""` when the component has none,
+    // which is a complaint rather than a refusal.
+    uid: Str
+    // `DTSTAMP`, § 3.8.7.2: when this description of the event was
+    // created.  Not when the event happens.
+    dtstamp: Str
+    // `DTSTART`, as its typed value — a DATE for an all-day event and
+    // a DATE-TIME for a timed one.  The distinction is the value's,
+    // not a flag's; see `is_all_day`.
+    start: icalvalue.IcalValue
+    // `SUMMARY`, § 3.8.1.12, unescaped. `""` when absent.
+    summary: Str
+    // `DESCRIPTION`, § 3.8.1.5, unescaped. `""` when absent.
+    description: Str
+    // `LOCATION`, § 3.8.1.7, unescaped. `""` when absent.
+    location: Str
+    // `STATUS`, § 3.8.1.11: `"TENTATIVE"`, `"CONFIRMED"`,
+    // `"CANCELLED"`, or `""`.
+    status: Str
+    // Whether the component carried a `DTEND`.
+    has_end: Bool
+    // Whether the component carried a `DURATION`.
+    has_duration: Bool
+    // The component this was read from, entire.
+    component: icalcomp.IcalComponent
+
+// A `VTODO`, read.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.todo_of(icalcomp.component("VTODO"))
+//         Err(_) => println("not a usable VTODO")
+//         Ok(t)  => println("${t.percent_complete}")
+// ```
+pub struct IcalTodo
+    // `UID`.
+    uid: Str
+    // `DTSTAMP`.
+    dtstamp: Str
+    // `SUMMARY`, unescaped.
+    summary: Str
+    // `STATUS`, § 3.8.1.11: `"NEEDS-ACTION"`, `"COMPLETED"`,
+    // `"IN-PROCESS"`, `"CANCELLED"`, or `""`.
+    status: Str
+    // `PERCENT-COMPLETE`, § 3.8.1.8, `0 ..= 100`. Zero when absent,
+    // which RFC 5545 makes indistinguishable from an explicit zero.
+    percent_complete: Int
+    // Whether the component carried a `DUE`.
+    has_due: Bool
+    // The component this was read from.
+    component: icalcomp.IcalComponent
+
+// A `VALARM`, read.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.alarm_of(icalcomp.component("VALARM"))
+//         Err(_) => println("not a usable VALARM")
+//         Ok(a)  => println(a.action)
+// ```
+pub struct IcalAlarm
+    // `ACTION`, § 3.8.6.1: `"AUDIO"`, `"DISPLAY"` or `"EMAIL"`.
+    action: Str
+    // Whether the `TRIGGER` is a duration relative to the enclosing
+    // component rather than an absolute instant. RFC 5545 § 3.8.6.3
+    // makes the relative form the default, and its sign is what
+    // decides whether the alarm is before or after — a positive
+    // trigger on a reminder is an alarm that fires after the meeting.
+    trigger_is_relative: Bool
+    // Whether a relative `TRIGGER` is measured from the enclosing
+    // component's END rather than its start. § 3.8.6.3's `RELATED`
+    // parameter, and the reason a "fifteen minutes before" on a
+    // `VTODO` is not always fifteen minutes before its start.
+    trigger_related_to_end: Bool
+    // `REPEAT`, § 3.8.6.2: how many times the alarm repeats after the
+    // first. Zero when absent.
+    repeat: Int
+    // The component this was read from.
+    component: icalcomp.IcalComponent
+
+// A `VFREEBUSY`, read.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.freebusy_of(icalcomp.component("VFREEBUSY"))
+//         Err(_) => println("not a usable VFREEBUSY")
+//         Ok(f)  => println("${list.len(f.busy)}")
+// ```
+pub struct IcalFreeBusy
+    // `UID`.
+    uid: Str
+    // `ORGANIZER`, § 3.8.4.3, as written. `""` when absent.
+    organizer: Str
+    // Every period a `FREEBUSY` property marked busy, in the order
+    // they were written. RFC 5545 § 3.8.2.6 allows several periods
+    // per property and several properties per component, and they are
+    // flattened here because the split between them carries no
+    // meaning.
+    busy: [icalvalue.IcalPeriod]
+    // The component this was read from.
+    component: icalcomp.IcalComponent
+
+// A `VTIMEZONE`, read.
+//
+// The offsets are held as written. Nothing here resolves a zone or
+// applies one: see the package README's Time zones section.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.timezone_of(icalcomp.component("VTIMEZONE"))
+//         Err(_) => println("not a usable VTIMEZONE")
+//         Ok(z)  => println(z.tzid)
+// ```
+pub struct IcalTimezone
+    // `TZID`, § 3.8.3.1: the identifier every `TZID` parameter in the
+    // calendar refers to. It is the calendar's own name for the zone
+    // and need not be an IANA one.
+    tzid: Str
+    // The `STANDARD` sub-components, as components.
+    standard: [icalcomp.IcalComponent]
+    // The `DAYLIGHT` sub-components, as components.
+    daylight: [icalcomp.IcalComponent]
+    // The component this was read from.
+    component: icalcomp.IcalComponent
+
+// Read a `VEVENT`.
+//
+// Refuses a component that is not a `VEVENT`. Does NOT refuse one
+// that is missing a `UID` or a `DTSTAMP`, or one carrying both a
+// `DTEND` and a `DURATION`: those are complaints `icalparse.check`
+// collects, and an importer that dropped such events would drop most
+// of the calendars in the world.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VTODO"))
+//         Ok(_)  => println("this cannot happen")
+//         Err(_) => println("that is not a VEVENT")
+// ```
+pub fn event_of(c: icalcomp.IcalComponent) -> Result<IcalEvent, icalerror.IcalError> []
+    todo("ical-nv.icalevent.event_of")
+
+// Read a `VTODO`.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.todo_of(icalcomp.component("VTODO"))
+//         Err(_) => println("not a usable VTODO")
+//         Ok(t)  => println(t.uid)
+// ```
+pub fn todo_of(c: icalcomp.IcalComponent) -> Result<IcalTodo, icalerror.IcalError> []
+    todo("ical-nv.icalevent.todo_of")
+
+// Read a `VALARM`.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.alarm_of(icalcomp.component("VALARM"))
+//         Err(_) => println("not a usable VALARM")
+//         Ok(a)  => println("${a.repeat}")
+// ```
+pub fn alarm_of(c: icalcomp.IcalComponent) -> Result<IcalAlarm, icalerror.IcalError> []
+    todo("ical-nv.icalevent.alarm_of")
+
+// Read a `VFREEBUSY`.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.freebusy_of(icalcomp.component("VFREEBUSY"))
+//         Err(_) => println("not a usable VFREEBUSY")
+//         Ok(f)  => println(f.organizer)
+// ```
+pub fn freebusy_of(c: icalcomp.IcalComponent) -> Result<IcalFreeBusy, icalerror.IcalError> []
+    todo("ical-nv.icalevent.freebusy_of")
+
+// Read a `VTIMEZONE`.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.timezone_of(icalcomp.component("VTIMEZONE"))
+//         Err(_) => println("not a usable VTIMEZONE")
+//         Ok(z)  => println("${list.len(z.daylight)}")
+// ```
+pub fn timezone_of(c: icalcomp.IcalComponent) -> Result<IcalTimezone, icalerror.IcalError> []
+    todo("ical-nv.icalevent.timezone_of")
+
+// Whether the event is an all-day one — a `DTSTART` that is a DATE.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VEVENT"))
+//         Err(_) => println("not a usable VEVENT")
+//         Ok(e)  => println("${icalevent.is_all_day(e)}")
+// ```
+pub fn is_all_day(e: IcalEvent) -> Bool []
+    todo("ical-nv.icalevent.is_all_day")
+
+// The event's NON-INCLUSIVE end, as RFC 5545 § 3.6.1 defines it.
+//
+// From the `DTEND` when there is one, from `DTSTART` plus `DURATION`
+// when there is one of those, and from § 3.6.1's default otherwise:
+// one day after a date-valued start, and the start itself for a timed
+// one.
+//
+// For an all-day event this is the day AFTER the last day. A one-day
+// event on 2026-01-05 ends at 2026-01-06. Use `last_day` to render.
+//
+// Refuses a component carrying both a `DTEND` and a `DURATION`, which
+// § 3.6.1 forbids and for which nothing says which wins.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VEVENT"))
+//         Err(_) => println("not a usable VEVENT")
+//         Ok(e)  =>
+//             match icalevent.end_exclusive(e)
+//                 Ok(_)  => println("the end is known")
+//                 Err(_) => println("DTEND and DURATION are both present")
+// ```
+pub fn end_exclusive(e: IcalEvent) -> Result<icalvalue.IcalValue, icalerror.IcalError> []
+    todo("ical-nv.icalevent.end_exclusive")
+
+// The last day an all-day event covers, which is the day before its
+// non-inclusive end.
+//
+// The call a renderer wants, published so that the conversion happens
+// once here rather than wrongly in every caller. `None` for a timed
+// event, which does not have a last day in this sense.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VEVENT"))
+//         Err(_) => println("not a usable VEVENT")
+//         Ok(e)  =>
+//             match icalevent.last_day(e)
+//                 Some(d) => println("${d.day}")
+//                 None    => println("not an all-day event")
+// ```
+pub fn last_day(e: IcalEvent) -> ?civil.CivilDate []
+    todo("ical-nv.icalevent.last_day")
+
+// How long the event lasts.
+//
+// From the `DURATION` when there is one, and from the difference
+// between `DTSTART` and `DTEND` otherwise. Refuses a component
+// carrying both, for the same reason `end_exclusive` does.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VEVENT"))
+//         Err(_) => println("not a usable VEVENT")
+//         Ok(e)  =>
+//             match icalevent.duration_of(e)
+//                 Ok(_)  => println("the length is known")
+//                 Err(_) => println("DTEND and DURATION are both present")
+// ```
+pub fn duration_of(e: IcalEvent) -> Result<span.TimeDelta, icalerror.IcalError> []
+    todo("ical-nv.icalevent.duration_of")
+
+// The event's whole series, as an rrule-nv recurrence set.
+//
+// The `DTSTART`, every `RRULE`, every `RDATE` and every `EXDATE`,
+// assembled in the order RFC 5545 § 3.8.5 fixes — so the caller never
+// re-implements it and never forgets that exclusion comes last.
+//
+// A non-recurring event answers a set with no rules, whose only
+// occurrence is the `DTSTART`, so a caller writes one code path.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VEVENT"))
+//         Err(_) => println("not a usable VEVENT")
+//         Ok(e)  =>
+//             match icalevent.recurrence_of(e)
+//                 Ok(_)  => println("the series is assembled")
+//                 Err(_) => println("the recurrence rule does not parse")
+// ```
+pub fn recurrence_of(e: IcalEvent) -> Result<rruleset.RruleSet, icalerror.IcalError> []
+    todo("ical-nv.icalevent.recurrence_of")
+
+// The `RECURRENCE-ID` of an event that overrides one occurrence of a
+// series, or `None`.
+//
+// RFC 5545 § 3.8.4.4. Two `VEVENT`s with the same `UID` are one
+// series and its overrides — the week the meeting moved — and a
+// reader that treated them as two events shows both. This is how a
+// caller tells them apart.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VEVENT"))
+//         Err(_) => println("not a usable VEVENT")
+//         Ok(e)  =>
+//             match icalevent.recurrence_id_of(e)
+//                 Some(_) => println("this overrides one occurrence")
+//                 None    => println("this is the series itself")
+// ```
+pub fn recurrence_id_of(e: IcalEvent) -> ?icalvalue.IcalValue []
+    todo("ical-nv.icalevent.recurrence_id_of")
+
+// The `VALARM`s inside an event.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VEVENT"))
+//         Err(_) => println("not a usable VEVENT")
+//         Ok(e)  => println("${list.len(icalevent.alarms_of(e))}")
+// ```
+pub fn alarms_of(e: IcalEvent) -> [IcalAlarm] []
+    todo("ical-nv.icalevent.alarms_of")
+
+// The event as a component, ready to print.
+//
+// The component it was read from, unchanged, so a read-and-write
+// round-trip keeps every property this view does not name.
+//
+// ```novo
+// use icalcomp
+// use icalevent
+//
+// fn main() [io]
+//     match icalevent.event_of(icalcomp.component("VEVENT"))
+//         Err(_) => println("not a usable VEVENT")
+//         Ok(e)  => println(icalcomp.component_name(icalevent.to_component(e)))
+// ```
+pub fn to_component(e: IcalEvent) -> icalcomp.IcalComponent []
+    todo("ical-nv.icalevent.to_component")
