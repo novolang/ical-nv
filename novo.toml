@@ -48,4 +48,4 @@ calendar-nv = "^0.0.2"
 # becomes `rrule-nv = "^0.0.1"` before the publish, and rrule-nv is
 # published first.  Under the caret rule `^0.0.1` pins exactly 0.0.1,
 # because a `0.0.x` version has no compatible neighbours.
-rrule-nv = { path = "../rrule-nv" }
+rrule-nv = "^0.0.1"
