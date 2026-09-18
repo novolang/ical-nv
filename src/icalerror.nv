@@ -73,6 +73,19 @@ pub enum IcalError
     // RFC 5545 § 3.6.1 requires a positive one.
     IcalEndBeforeStart(component: Str)
 
+// `IcalError` is an `Error`, which is what lets
+// `Result<T, IcalError>` exist at all — `icalparse.parse`,
+// `icalparse.parse_strict`, `icalline.parse_line` and every fallible
+// builder in `icalevent` answer with one.
+impl Error for IcalError
+    // The one-line message: `icalerror.message`'s sentence, the
+    // refusal named with the property, component or line it was
+    // about.
+    //
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("ical-nv.IcalError.message")
+
 // The refusal as a sentence, ending without a full stop, suitable for
 // a log line or an error message the caller composes.
 //
