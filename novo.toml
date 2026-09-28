@@ -1,6 +1,6 @@
 [package]
 name        = "ical-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "The iCalendar object model of RFC 5545 in both directions: content lines folded at 75 octets on character boundaries, TEXT escaping, parameters, the fourteen value types with the VALUE parameter honoured, and VCALENDAR, VEVENT, VTODO, VJOURNAL, VALARM, VTIMEZONE and VFREEBUSY over calendar-nv's civil dates and rrule-nv's recurrence rules."
 license     = "Apache-2.0"
 
@@ -35,7 +35,7 @@ novo        = ">= 0.9.0"
 # occurrence read out of a calendar incomparable with one generated
 # from a rule, which is the whole reason both packages take the same
 # types.
-calendar-nv = "^0.0.2"
+calendar-nv = "^0.2.0"
 
 # rrule-nv supplies `Rrule` and `RruleSet`: the RECUR value type IS a
 # recurrence rule, and `icalevent.recurrence_of` hands back a set with
@@ -48,4 +48,4 @@ calendar-nv = "^0.0.2"
 # becomes `rrule-nv = "^0.0.1"` before the publish, and rrule-nv is
 # published first.  Under the caret rule `^0.0.1` pins exactly 0.0.1,
 # because a `0.0.x` version has no compatible neighbours.
-rrule-nv = "^0.0.1"
+rrule-nv = "^0.1.0"
